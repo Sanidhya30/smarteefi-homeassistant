@@ -65,7 +65,8 @@ class SmarteefiCover(CoverEntity):
         self.netmask = netmask
         self._current_position = 0  # Assume the cover is fully closed initially
         self._update_unsub = None
-        self._smap = None  # Store smap value from entity ID		
+        self._smap = None  # Store smap value from entity ID
+        self._attr_available = True
 
         # Extract serial:smap from unique_id (format: "serial:ignored:smap")
         parts = self._unique_id.split(':')
@@ -90,27 +91,38 @@ class SmarteefiCover(CoverEntity):
             self._update_unsub()
 
     def _handle_device_update(self, data):
-        """Update state from UDP message."""
-        received_smap = data["smap"]
-        status = data["status"]
-        
-        # Only process if smap matches our entity's smap
-        if received_smap != self._smap:
-            return
-        
-        if status == self._smap:
-            self._state = "open"
-            self._current_position = 100
-        else:
-            self._state = "closed"
-            self._current_position = 0
+        """Update state from coordinator or UDP message."""
+        # Update availability if provided by the coordinator
+        if "available" in data:
+            self._attr_available = data["available"]
 
+        # Update state if status is provided (from coordinator or UDP)
+        if "status" in data:
+            # If a status update is received, the device is considered available.
+            self._attr_available = True
+            
+            received_smap = data["smap"]
+            status = data["status"]
+            
+            # Only process if smap matches our entity's smap
+            if received_smap != self._smap:
+                return
+            
+            if status == self._smap:
+                self._state = "open"
+                self._current_position = 100
+            else:
+                self._state = "closed"
+                self._current_position = 0
+
+            _LOGGER.debug(
+                f"Updated cover {self._name} - "
+                f"State: {'Opened' if status else 'Closed'}, "
+                f"Current Position: {self._current_position}, Status: {status}"
+            )
+        
+        # Schedule an update in Home Assistant
         self.schedule_update_ha_state()
-        _LOGGER.debug(
-            f"Updated cover {self._name} - "
-            f"State: {'Opened' if status else 'Closed'}, "
-            f"Current Position: {self._current_position}, Status: {status}"
-        )        
 
     @property
     def name(self):

@@ -70,6 +70,7 @@ class SmarteefiFan(FanEntity):
         self._speed = 0
         self._update_unsub = None
         self._smap = None  # Store smap value from entity ID
+        self._attr_available = True
 
         # Extract serial:smap from unique_id (format: "serial:ignored:smap")
         parts = self._unique_id.split(':')
@@ -94,44 +95,55 @@ class SmarteefiFan(FanEntity):
             self._update_unsub()
 
     def _handle_device_update(self, data):
-        """Update state from UDP message."""
-        received_smap = data["smap"]
-        status = data["status"]
+        """Update state from coordinator or UDP message."""
+        # Update availability if provided by the coordinator
+        if "available" in data:
+            self._attr_available = data["available"]
+
+        # Update state if status is provided (from coordinator or UDP)
+        if "status" in data:
+            # If a status update is received, the device is considered available.
+            self._attr_available = True
+            
+            received_smap = data["smap"]
+            status = data["status"]
+            
+            # Only process if smap matches our entity's smap
+            if received_smap != self._smap:
+                return
+            
+            r1 = status & 0x10
+            r2 = status & 0x20
+            r3 = status & 0x40   
+
+            if r3:
+                self._percentage = 100
+                self._speed = 4
+            elif r2 and r1:
+                self._percentage = 75
+                self._speed = 3
+            elif r2:
+                self._percentage = 50
+                self._speed = 2
+            elif r1:
+                self._percentage = 25
+                self._speed = 1
+
+            if status == 0:
+                self._state = False
+                self._speed = 0
+                self._percentage = 0
+            else:
+                self._state = True
+
+            _LOGGER.debug(
+                f"Updated fan {self._name} - "
+                f"State: {'on' if self._state else 'off'}, "
+                f"Percentage: {self._percentage}, Speed: {self._speed}"
+            )
         
-        # Only process if smap matches our entity's smap
-        if received_smap != self._smap:
-            return
-        
-        r1 = status & 0x10
-        r2 = status & 0x20
-        r3 = status & 0x40   
-
-        if r3:
-            self._percentage = 100
-            self._speed = 4
-        elif r2 and r1:
-            self._percentage = 75
-            self._speed = 3
-        elif r2:
-            self._percentage = 50
-            self._speed = 2
-        elif r1:
-            self._percentage = 25
-            self._speed = 1
-
-        if status == 0:
-            self._state = False
-            self._speed = 0
-            self._percentage = 0
-        else:
-            self._state = True
-
-        self.schedule_update_ha_state()
-        _LOGGER.debug(
-            f"Updated fan {self._name} - "
-            f"State: {'on' if self._state else 'off'}, "
-            f"Percentage: {self._percentage}, Speed: {self._speed}"
-        )        
+        # Schedule an update in Home Assistant
+        self.schedule_update_ha_state()      
             
     @property
     def name(self):

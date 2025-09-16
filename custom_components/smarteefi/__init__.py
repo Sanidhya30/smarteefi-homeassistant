@@ -151,8 +151,27 @@ class SmarteefiDataUpdateCoordinator:
                 await self._sync_device_state(device, devices)
                 await asyncio.sleep(1)  # Brief pause between devices
 
+    async def _execute_get_status(self, command):
+        """Execute the get-status command and return the output and error."""
+        try:
+            process = await asyncio.create_subprocess_exec(
+                self._hacli_path, *command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await process.communicate()
+            
+            if process.returncode == 0:
+                return stdout.decode().strip(), None  # output, error
+            else:
+                return None, stderr.decode().strip()  # output, error
+                
+        except Exception as e:
+            _LOGGER.error(f"Exception during get-status command: {e}")
+            return None, str(e)
+
     async def _sync_device_state(self, device, devices):
-        """Sync state for a single device."""
+        """Sync state for a single device, with a retry on failure."""
         command = [
             self.ip_address,
             self.netmask,
@@ -161,45 +180,56 @@ class SmarteefiDataUpdateCoordinator:
             str(device.get("cloudid", ""))
         ]
 
-        _LOGGER.debug(f"Syncing state for device {device['id']}")
-
-        try:
-            process = await asyncio.create_subprocess_exec(
-                self._hacli_path, *command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            stdout, stderr = await process.communicate()
-
-            if process.returncode == 0:
-                output = stdout.decode().strip()
-                _LOGGER.debug(f"State sync successful for {device['id']}: {output}")
-                
-                try:
-                    status = int(output)
-                    parts = device["id"].split(':')
-                    prefix = ':'.join(parts[:2])
-
-                    if len(parts) == 3:
-                        for dev in devices:
-                            dev_parts = dev['id'].split(':')
-                            dev_prefix = ':'.join(dev_parts[:2])  # First two parts of device ID
+        # First attempt
+        _LOGGER.debug(f"Syncing state for device {device['id']} (Attempt 1)")
+        output, error = await self._execute_get_status(command)
         
-                            # Check if prefixes match
-                            if dev_prefix == prefix:
-                                # Create var1 and var2
-                                entity_match_id = f"{dev_parts[0]}:{dev_parts[2]}"  # First part and third part
-                                async_dispatcher_send(
-                                    self.hass,
-                                    f"{DOMAIN}_device_update_{entity_match_id}",
-                                    {"smap": int(dev_parts[2]), "status": status}
-                                )
-                except ValueError:
-                    _LOGGER.error(f"Invalid status output for {device['id']}: {output}")
-            else:
-                _LOGGER.error(f"State sync failed for {device['id']}: {stderr.decode().strip()}")
-        except Exception as e:
-            _LOGGER.error(f"Error syncing state for {device['id']}: {e}")
+        # Check if the first attempt failed
+        if error or (output and "device offline" in output.lower()):
+            _LOGGER.warning(f"Device {device['id']} appears offline on first attempt. Retrying in 5 seconds...")
+            await asyncio.sleep(5)  # Wait before retrying
+            
+            # Second attempt
+            _LOGGER.debug(f"Syncing state for device {device['id']} (Attempt 2)")
+            output, error = await self._execute_get_status(command)
+
+        # Helper to dispatch updates to all entities of a physical device
+        def dispatch_to_entities(payload):
+            parts = device["id"].split(':')
+            prefix = ':'.join(parts[:2])
+            for dev in devices:
+                dev_parts = dev['id'].split(':')
+                if ':'.join(dev_parts[:2]) == prefix:
+                    entity_match_id = f"{dev_parts[0]}:{dev_parts[2]}"
+                    async_dispatcher_send(
+                        self.hass,
+                        f"{DOMAIN}_device_update_{entity_match_id}",
+                        payload
+                    )
+
+        # Final check after potential retry
+        if error or (output and "device offline" in output.lower()):
+            _LOGGER.error(f"Device {device['id']} is offline after second attempt. Marking as unavailable. Error: {error or output}")
+            dispatch_to_entities({"available": False})
+        else:
+            _LOGGER.debug(f"State sync successful for {device['id']}: {output}")
+            try:
+                status = int(output)
+                # Dispatch status and availability to all entities of this device
+                prefix = ':'.join(device["id"].split(':')[:2])
+                for dev in devices:
+                    dev_parts = dev['id'].split(':')
+                    if ':'.join(dev_parts[:2]) == prefix:
+                        entity_smap = int(dev_parts[2])
+                        entity_match_id = f"{dev_parts[0]}:{entity_smap}"
+                        async_dispatcher_send(
+                            self.hass,
+                            f"{DOMAIN}_device_update_{entity_match_id}",
+                            {"smap": entity_smap, "status": status, "available": True}
+                        )
+            except (ValueError, TypeError):  # Catches int conversion errors or if output is None
+                _LOGGER.error(f"Invalid status output for {device['id']} after sync: {output}. Marking as unavailable.")
+                dispatch_to_entities({"available": False})
 
     async def async_unload(self):
         """Unload the coordinator."""
