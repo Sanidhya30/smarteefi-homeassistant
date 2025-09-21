@@ -119,22 +119,23 @@ class SmarteefiFan(FanEntity):
             if r3:
                 self._percentage = 100
                 self._speed = 4
+                self._state = True
             elif r2 and r1:
                 self._percentage = 75
                 self._speed = 3
+                self._state = True
             elif r2:
                 self._percentage = 50
                 self._speed = 2
+                self._state = True
             elif r1:
                 self._percentage = 25
                 self._speed = 1
-
-            if status == 0:
-                self._state = False
+                self._state = True
+            else:
                 self._speed = 0
                 self._percentage = 0
-            else:
-                self._state = True
+                self._state = False
 
             _LOGGER.debug(
                 f"Updated fan {self._name} - "

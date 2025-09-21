@@ -95,10 +95,11 @@ class SmarteefiLight(LightEntity):
             if received_smap != self._smap:
                 return
             
-            if status:
-                r = (status & 0xFF000000) >> 24
-                g = (status & 0x00FF0000) >> 16
-                b = (status & 0x0000FF00) >> 8
+            r = (status & 0xFF000000) >> 24
+            g = (status & 0x00FF0000) >> 16
+            b = (status & 0x0000FF00) >> 8
+            
+            if r or g or b:
                 self._brightness = max(r, g, b)
                 self._rgb_color = (r, g, b)
                 self._state = True
